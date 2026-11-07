@@ -38,18 +38,21 @@ export function proxyToHostAgent(path: string, method: string, res: import('expr
 }
 
 export function getHostHostname(): Promise<string> {
-  return new Promise((resolve, reject) => {
+  const fallback = process.env.DASH_HOSTNAME || os.hostname();
+  return new Promise((resolve) => {
     const socketPath = process.env.DASH_HOST_AGENT_SOCKET;
-    if (!socketPath) return resolve(os.hostname());
+    if (!socketPath) return resolve(fallback);
     const request = http.get({ socketPath, path: '/api/hostname', timeout: 3_000 }, (response) => {
       const chunks: Buffer[] = [];
       response.on('data', (chunk: Buffer) => chunks.push(chunk));
       response.on('end', () => {
-        try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')).hostname); }
-        catch { reject(new Error('The host helper returned an invalid hostname.')); }
+        try {
+          const hostname = JSON.parse(Buffer.concat(chunks).toString('utf8')).hostname;
+          resolve(typeof hostname === 'string' && hostname ? hostname : fallback);
+        } catch { resolve(fallback); }
       });
     });
-    request.on('timeout', () => request.destroy(new Error('The host helper did not respond.')));
-    request.on('error', reject);
+    request.on('timeout', () => request.destroy());
+    request.on('error', () => resolve(fallback));
   });
 }

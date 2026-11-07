@@ -1,27 +1,27 @@
 services:
   stanlab-dash:
-    # Managed by the Stanlab Dash CLI; deployed to /srv/compose/stanlab.
-    build: ${DASH_PROJECT_DIR:?Run ./stanlab install}
+    build: .
     image: stanlab-dash:latest
     container_name: stanlab-dash
     restart: unless-stopped
     init: true
-    user: "${DASH_UID:?Run ./stanlab install}:${DASH_GID:?Run ./stanlab install}"
     env_file:
-      - path: ${DASH_PROJECT_DIR:?Run ./stanlab install}/.env
+      - path: ./config/stanlab.env
         required: true
         format: raw
     environment:
       NODE_ENV: production
       PORT: "3000"
       DASH_BIND_ADDRESS: 0.0.0.0
-      DASH_HOST_AGENT_SOCKET: /run/stanlab-agent/agent.sock
+      XDG_DATA_HOME: /app/data
     ports:
-      - "127.0.0.1:${PORT:?Run ./stanlab install}:3000"
+      - "${STANLAB_BIND_ADDRESS:-127.0.0.1}:${STANLAB_PORT:-35437}:3000"
     volumes:
-      - "${DASH_HOST_AGENT_DIR:?Run ./stanlab install}:/run/stanlab-agent:rw,Z"
+      - stanlab-data:/app/data
+      - ./config/scripts.json:/app/config/scripts.json:ro
+      - ./scripts:/app/scripts:ro
     networks:
-      - stanlab
+      - homelab
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s
@@ -30,6 +30,10 @@ services:
       retries: 3
 
 networks:
-  stanlab:
+  homelab:
     external: true
-    name: ${DASH_DOCKER_NETWORK:?Run ./stanlab install to select a Docker network}
+    name: ${DASH_DOCKER_NETWORK:-nextcloud_default}
+
+volumes:
+  stanlab-data:
+    name: stanlab-data

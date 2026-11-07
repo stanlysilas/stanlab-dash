@@ -6,5 +6,6 @@ client/dist/
 .env
 .env.*
 !.env.example
+config/stanlab.env
 .stanlab-compose.env
 npm-debug.log*
