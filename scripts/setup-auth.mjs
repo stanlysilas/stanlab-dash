@@ -1,14 +1,17 @@
 import { randomBytes, scrypt as scryptCallback } from 'node:crypto';
-import { chmod, readFile, rename, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { createInterface } from 'node:readline/promises';
+import os from 'node:os';
 import path from 'node:path';
 
 const scrypt = promisify(scryptCallback);
-const envPath = path.resolve('config/stanlab.env');
-const currentEnv = await readFile(envPath, 'utf8').catch(() => readFile(path.resolve('config/stanlab.env.example'), 'utf8'));
-const existingUsername = currentEnv.match(/^\s*DASH_USERNAME\s*=\s*(.*?)\s*$/m)?.[1] ?? '';
-const defaultUsername = existingUsername && existingUsername !== 'stanly' ? existingUsername : process.env.USER ?? 'stanly';
+const dataDirectory = process.env.STANLAB_DATA_DIR
+  ?? path.resolve(process.env.XDG_DATA_HOME ?? path.join(os.homedir(), '.local', 'share'), 'stanlab-dash');
+const credentialsPath = path.join(dataDirectory, 'credentials.json');
+const currentCredentials = await readFile(credentialsPath, 'utf8').then((value) => JSON.parse(value)).catch(() => ({}));
+const existingUsername = typeof currentCredentials.username === 'string' ? currentCredentials.username : '';
+const defaultUsername = existingUsername || process.env.STANLAB_DEFAULT_USERNAME || 'admin';
 let username = defaultUsername;
 const lineReader = createInterface({ input: process.stdin, output: process.stdout });
 
@@ -28,18 +31,13 @@ if (password !== confirmation) throw new Error('The passwords did not match. No 
 const salt = randomBytes(16).toString('hex');
 const derivedKey = await scrypt(password, salt, 64);
 const passwordHash = `scrypt$${salt}$${derivedKey.toString('hex')}`;
-const updatedEnv = setEnvValue(setEnvValue(currentEnv, 'DASH_USERNAME', username), 'DASH_PASSWORD_HASH', passwordHash);
-const tempPath = `${envPath}.${process.pid}.tmp`;
-await writeFile(tempPath, updatedEnv.endsWith('\n') ? updatedEnv : `${updatedEnv}\n`, { mode: 0o600, flag: 'wx' });
+await mkdir(dataDirectory, { recursive: true, mode: 0o700 });
+await chmod(dataDirectory, 0o700);
+const tempPath = `${credentialsPath}.${process.pid}.tmp`;
+await writeFile(tempPath, `${JSON.stringify({ username, passwordHash }, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
 await chmod(tempPath, 0o600);
-await rename(tempPath, envPath);
-console.log('Credentials saved to config/stanlab.env with owner-only permissions. The password was not echoed or stored in plaintext.');
-
-function setEnvValue(contents, key, value) {
-  const line = `${key}=${value}`;
-  const pattern = new RegExp(`^\\s*${key}\\s*=.*$`, 'm');
-  return pattern.test(contents) ? contents.replace(pattern, line) : `${contents.trimEnd()}\n${line}\n`;
-}
+await rename(tempPath, credentialsPath);
+console.log('Credentials saved to the persistent data volume with owner-only permissions. The password was not echoed or stored in plaintext.');
 
 function promptHidden(prompt) {
   const input = process.stdin;

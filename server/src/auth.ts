@@ -1,28 +1,33 @@
 import { randomBytes, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto';
-import { createClient } from 'redis';
+import { readFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { promisify } from 'node:util';
 import type { Request, Response, NextFunction } from 'express';
 
 const scrypt = promisify(scryptCallback);
 export const SESSION_TTL_MS = 15 * 60 * 1000;
 const COOKIE_NAME = 'stanlab_session';
-const SESSION_PREFIX = 'stanlab:session:';
 type Session = { createdAt: number; expiresAt: number };
 const sessions = new Map<string, Session>();
-const redisUrl = process.env.REDIS_URL;
-const useRedis = process.env.SESSION_STORE === 'redis';
-const redis = useRedis && redisUrl ? createClient({
-  url: redisUrl,
-  socket: {
-    connectTimeout: 5_000,
-    reconnectStrategy: (retries) => retries < 5 ? Math.min(250 * (retries + 1), 2_000) : false,
-  },
-}) : null;
-redis?.on('error', () => console.error('Stanlab Redis session store connection error.'));
 
-export async function initializeSessionStore() {
-  if (useRedis && !redisUrl) throw new Error('SESSION_STORE=redis requires REDIS_URL.');
-  if (redis && !redis.isOpen) await redis.connect();
+const dataDirectory = process.env.STANLAB_DATA_DIR
+  ?? path.resolve(process.env.XDG_DATA_HOME ?? path.join(os.homedir(), '.local', 'share'), 'stanlab-dash');
+const credentialsPath = path.join(dataDirectory, 'credentials.json');
+
+export async function loadCredentials(): Promise<{ username: string; passwordHash: string }> {
+  if (process.env.DASH_USERNAME && process.env.DASH_PASSWORD_HASH) {
+    return { username: process.env.DASH_USERNAME, passwordHash: process.env.DASH_PASSWORD_HASH };
+  }
+  try {
+    const parsed: unknown = JSON.parse(await readFile(credentialsPath, 'utf8'));
+    if (parsed && typeof parsed === 'object' && 'username' in parsed && 'passwordHash' in parsed
+      && typeof parsed.username === 'string' && typeof parsed.passwordHash === 'string'
+      && /^scrypt\$[0-9a-f]{32}\$[0-9a-f]{128}$/.test(parsed.passwordHash)) {
+      return { username: parsed.username, passwordHash: parsed.passwordHash };
+    }
+  } catch { /* Credentials are created by the `setup` command on first run. */ }
+  return { username: '', passwordHash: '' };
 }
 
 export async function getSessionRemainingMs(id: string | undefined): Promise<number> {
@@ -47,8 +52,7 @@ export async function createSession(res: Response): Promise<void> {
   const now = Date.now();
   const id = randomBytes(32).toString('hex');
   const session = { createdAt: now, expiresAt: now + SESSION_TTL_MS };
-  if (redis) await redis.set(`${SESSION_PREFIX}${id}`, JSON.stringify(session), { PX: SESSION_TTL_MS });
-  else sessions.set(id, session);
+  sessions.set(id, session);
   res.cookie(COOKIE_NAME, id, { httpOnly: true, secure: process.env.DASH_COOKIE_SECURE === 'true', sameSite: 'strict', path: '/', maxAge: SESSION_TTL_MS });
 }
 
@@ -56,8 +60,7 @@ export async function destroySession(req: Request, res: Response): Promise<void>
   const id = req.cookies?.[COOKIE_NAME];
   try {
     if (typeof id === 'string') {
-      if (redis) await redis.del(`${SESSION_PREFIX}${id}`);
-      else sessions.delete(id);
+      sessions.delete(id);
     }
   } finally {
     res.clearCookie(COOKIE_NAME, { httpOnly: true, secure: process.env.DASH_COOKIE_SECURE === 'true', sameSite: 'strict', path: '/' });
@@ -70,8 +73,7 @@ export async function requireSession(req: Request, res: Response, next: NextFunc
     const session = typeof id === 'string' ? await readSession(id) : undefined;
     if (!session || session.expiresAt <= Date.now()) {
       if (typeof id === 'string') {
-        if (redis) await redis.del(`${SESSION_PREFIX}${id}`);
-        else sessions.delete(id);
+        sessions.delete(id);
       }
       res.clearCookie(COOKIE_NAME, { httpOnly: true, secure: process.env.DASH_COOKIE_SECURE === 'true', sameSite: 'strict', path: '/' });
       res.status(401).json({ error: 'Your session expired. Sign in again.' });
@@ -84,20 +86,10 @@ export async function requireSession(req: Request, res: Response, next: NextFunc
 }
 
 async function readSession(id: string): Promise<Session | undefined> {
-  if (!redis) return sessions.get(id);
-  const value = await redis.get(`${SESSION_PREFIX}${id}`);
-  if (!value) return undefined;
-  try {
-    const session: unknown = JSON.parse(value);
-    if (session && typeof session === 'object' && 'createdAt' in session && 'expiresAt' in session && typeof session.createdAt === 'number' && typeof session.expiresAt === 'number') {
-      return { createdAt: session.createdAt, expiresAt: session.expiresAt };
-    }
-  } catch { /* Treat malformed session data as expired. */ }
-  await redis.del(`${SESSION_PREFIX}${id}`);
-  return undefined;
+  return sessions.get(id);
 }
 
-if (!useRedis) setInterval(() => {
+setInterval(() => {
   const now = Date.now();
   for (const [id, session] of sessions) if (session.expiresAt <= now) sessions.delete(id);
 }, 60_000).unref();

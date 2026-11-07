@@ -3,7 +3,7 @@ import express from 'express';
 import cookieParser from 'cookie-parser';
 import path from 'node:path';
 import { z } from 'zod';
-import { createSession, destroySession, getSessionRemainingMs, initializeSessionStore, requireSession, SESSION_TTL_MS, verifyPassword } from './auth.js';
+import { createSession, destroySession, getSessionRemainingMs, loadCredentials, requireSession, SESSION_TTL_MS, verifyPassword } from './auth.js';
 import { getMetrics } from './metrics.js';
 import { listScripts, runScript, setDisplayManager } from './actions.js';
 import { actOnStoreApp, getSavedLaunchers, installStoreApp, listStoreApps, saveLaunchers } from './store.js';
@@ -12,8 +12,9 @@ import { getHostHostname, proxyToHostAgent } from './host-agent-client.js';
 const app = express();
 const port = Number(process.env.PORT ?? (process.env.NODE_ENV === 'production' ? 0 : 3000));
 const host = process.env.DASH_BIND_ADDRESS ?? (process.env.NODE_ENV === 'production' ? '127.0.0.1' : '0.0.0.0');
-const username = process.env.DASH_USERNAME ?? '';
-const passwordHash = process.env.DASH_PASSWORD_HASH ?? '';
+const storedCredentials = await loadCredentials();
+const username = process.env.DASH_USERNAME ?? storedCredentials.username;
+const passwordHash = process.env.DASH_PASSWORD_HASH ?? storedCredentials.passwordHash;
 app.disable('x-powered-by');
 app.use(express.json({ limit: '32kb' }));
 app.use(cookieParser());
@@ -147,10 +148,9 @@ function useHostAgent(path: string, method: string, res: express.Response, body?
   return true;
 }
 
-await initializeSessionStore();
 const server = app.listen(port, host, () => {
   const address = server.address();
   const actualPort = typeof address === 'object' && address ? address.port : port;
   console.log(`Stanlab Dash listening on http://${host}:${actualPort}`);
-  if (!username || !passwordHash) console.warn('Authentication is not configured. Set DASH_USERNAME and DASH_PASSWORD_HASH before use.');
+  if (!username || !passwordHash) console.warn('Authentication is not configured. Run the container setup command with the persistent data volume mounted.');
 });

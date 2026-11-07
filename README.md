@@ -1,105 +1,121 @@
 # Stanlab Dash
 
-A self-hosted homelab homepage built with React, TypeScript, Vite, Tailwind CSS, and Express. It has a single dashboard account, an HTTP-only cookie, and an absolute 15-minute session. Production sessions use Redis.
+Stanlab is a self-hosted homelab homepage distributed as a standalone Docker image. It does not require Redis, another application container, or an external Docker network. Docker Compose creates an isolated project network automatically. Login sessions live in memory and expire after 15 minutes; restarting the container signs out active sessions.
 
-## Legion deployment with Docker Compose
+## Pull the image
 
-Stanlab is deployed as a regular, user-managed Compose project. The project directory contains the source, `Dockerfile`, `compose.yaml`, and your local configuration. The CLI does not choose ports, discover networks, install host services, configure DNS, or configure Cloudflare Tunnel.
+The published image is:
 
-Clone the project into the Compose directory and create the nonsecret Compose settings file:
-
-```bash
-git clone <repository-url> /srv/compose/stanlab
-cd /srv/compose/stanlab
-cp .env.example .env
+```text
+ghcr.io/stanlysilas/stanlab-dash:latest
 ```
 
-Edit `.env` and set a free port and the Docker network Stanlab should join. The defaults match the Legion's Nextcloud setup:
+Pull it directly:
+
+```bash
+docker pull ghcr.io/stanlysilas/stanlab-dash:latest
+```
+
+GitHub Actions builds and publishes the image from this repository. For anonymous `docker pull`, the GHCR package must be public. Release tags are also published as image tags.
+
+## Create the Compose project manually
+
+Make a directory for your own Compose configuration, then create `docker-compose.yml` and `.env` there. The example below has no connection to other containers. Change the bind address, port, origin, and hostname to your own choices.
+
+```yaml
+services:
+  stanlab:
+    image: ghcr.io/stanlysilas/stanlab-dash:latest
+    container_name: stanlab-dash
+    restart: unless-stopped
+    init: true
+    environment:
+      DASH_ORIGIN: ${DASH_ORIGIN:?Set DASH_ORIGIN in .env}
+      DASH_COOKIE_SECURE: ${DASH_COOKIE_SECURE:?Set DASH_COOKIE_SECURE in .env}
+      DASH_HOSTNAME: ${DASH_HOSTNAME:?Set DASH_HOSTNAME in .env}
+      XDG_DATA_HOME: /app/data
+    ports:
+      - "${STANLAB_BIND_ADDRESS:?Set STANLAB_BIND_ADDRESS in .env}:${STANLAB_PORT:?Set STANLAB_PORT in .env}:3000"
+    volumes:
+      - stanlab-data:/app/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
+
+volumes:
+  stanlab-data:
+    name: stanlab-data
+```
+
+Create `.env` beside the Compose file. These are Compose settings only; they do not contain the login password:
 
 ```dotenv
 STANLAB_BIND_ADDRESS=127.0.0.1
 STANLAB_PORT=35437
-DASH_DOCKER_NETWORK=nextcloud_default
+DASH_ORIGIN=https://stanlab.dpdns.org
+DASH_COOKIE_SECURE=true
+DASH_HOSTNAME=Legion
 ```
 
-Create the single dashboard login. This runs a temporary Node container, asks for the password without echoing it, and writes only a scrypt hash to `config/stanlab.env` with mode `0600`:
+Pick any unused host port. Use `DASH_COOKIE_SECURE=false` only when opening Stanlab over plain HTTP. `DASH_ORIGIN` must exactly match the address users open in their browser.
+
+## Set the dashboard login
+
+Create the data volume, then run the image’s interactive setup command. It prompts for one username and password, stores a scrypt password hash with owner-only permissions, and never writes the plaintext password to disk:
 
 ```bash
-./stanlab setup
+docker volume create stanlab-data
+docker run --rm -it \
+  -v stanlab-data:/app/data \
+  ghcr.io/stanlysilas/stanlab-dash:latest setup
 ```
 
-Edit `config/stanlab.env` and verify `DASH_ORIGIN`, `DASH_HOSTNAME`, and `REDIS_URL`. For the Legion and Cloudflare hostname, the usual values are:
-
-```dotenv
-DASH_ORIGIN=https://stanlab.dpdns.org
-DASH_HOSTNAME=Legion
-SESSION_STORE=redis
-REDIS_URL=redis://nextcloud-redis:6379/1
-DASH_COOKIE_SECURE=true
-```
-
-The Redis container must be reachable on `DASH_DOCKER_NETWORK`. This setup uses database 1 and the `stanlab:session:` key prefix. Compose checks the configuration and starts the container:
+Start the service from your Compose directory:
 
 ```bash
 docker compose config --quiet
-docker compose up -d --build
+docker compose up -d
 docker compose ps
 docker compose logs -f
 ```
 
-The app publishes only to the address and port in `.env`. Choose a different `STANLAB_PORT` if it is occupied. The named `stanlab-data` volume keeps Store records and custom app links when the container is rebuilt or removed with `docker compose down`.
+The named volume keeps login credentials, custom app links, and Store records across container replacement. `docker compose down` keeps the volume; `docker compose down --volumes` removes it.
 
-### Cloudflare Tunnel and DNS
+## Cloudflare Tunnel and DNS
 
-Configure Cloudflare Tunnel and DNS yourself. If `cloudflared` runs on the Legion host, route `stanlab.dpdns.org` to `http://127.0.0.1:35437` (use your configured port). If `cloudflared` is a container on `nextcloud_default`, it can route to `http://stanlab-dash:3000`. Keep the `DASH_ORIGIN` value equal to the HTTPS origin users open in their browser. Stanlab does not modify DNS, tunnels, firewall rules, or router settings.
+Configure your tunnel and DNS manually. With `STANLAB_BIND_ADDRESS=127.0.0.1`, a host-installed `cloudflared` can route the hostname to `http://127.0.0.1:<STANLAB_PORT>`. If you run `cloudflared` in Docker, connect it to the Stanlab Compose network yourself and route it to `http://stanlab:3000`. Stanlab does not change DNS, tunnels, firewall rules, router settings, or Docker networks outside its own Compose project.
 
-If another service uses the chosen port, change `STANLAB_PORT` in `.env` and run `docker compose up -d`. No fixed port is required by the app.
+## Upgrade and remove
 
-## Container features and host controls
-
-The default Compose file does not mount the Docker socket or install a host-side helper. This keeps the deployment self-contained and prevents the dashboard from receiving unrestricted control over Docker. The Hello World script runs inside the Stanlab container. CPU, memory, and disk readings reflect what that container can see. GDM controls remain disabled by default. Store catalog browsing remains available, but installing or controlling host containers requires an explicitly configured host integration.
-
-The dashboard’s script launcher only runs scripts listed in `config/scripts.json`. Script files are mounted read-only and run as the unprivileged container user, with a 30-second timeout and bounded output. Do not add commands that require host privileges to this list.
-
-## Managing Stanlab
-
-You can use Docker Compose directly:
+To upgrade to the latest image:
 
 ```bash
-docker compose ps
-docker compose logs -f
-docker compose restart
-docker compose stop
-docker compose start
+docker pull ghcr.io/stanlysilas/stanlab-dash:latest
+docker compose up -d
+```
+
+To remove the container while preserving the data volume:
+
+```bash
 docker compose down
 ```
 
-`./stanlab` provides the same basic Compose operations. `./stanlab setup` resets the account; afterward run `docker compose up -d` to pass the new runtime configuration into the container. `./uninstall.sh` runs `docker compose down` and keeps `.env`, `config/stanlab.env`, and the `stanlab-data` volume. To remove the persistent volume too, use `docker compose down --volumes` after confirming you no longer need its data.
+## What runs inside the image
 
-To update the app, pull the repository and rebuild it:
+The image runs as the unprivileged `node` user. The starter `Hello World` script runs inside the container. Scripts are allowlisted in `config/scripts.json`, run without root privileges, and have a 30-second timeout. System metrics reflect what the container can see. Host GDM controls and installing/managing other Docker containers are not enabled; the image does not mount the Docker socket or install a host helper.
 
-```bash
-git pull
-docker compose up -d --build
-```
+The wallpaper stays in the browser's IndexedDB. The login cookie is HTTP-only, SameSite=Strict, and expires no later than 15 minutes after sign-in.
 
-## Development workstation
+## Build and development
 
-For local development, install Node.js 20.19+, 22.12+, or 24+, then run:
+The repository contains the Dockerfile and GitHub Actions workflow that builds and publishes the image. For local UI development, install Node.js 20.19+, 22.12+, or 24+, then run:
 
 ```bash
 npm ci
 npm run dev
 ```
 
-The development server uses in-memory sessions unless `SESSION_STORE=redis` is configured. Run `./stanlab setup` to create local login credentials, or set the same `DASH_USERNAME` and `DASH_PASSWORD_HASH` environment variables yourself.
-
-## Wallpaper and app links
-
-Use **Wallpaper** in the dashboard top bar to choose a local PNG, JPEG, WebP, or AVIF image. The image stays in the browser's IndexedDB and is not uploaded to the server. Custom app links are kept in the `stanlab-data` volume.
-
-## Optional GDM and host-level operations
-
-Host GDM controls, host metrics, and Store actions require a separate, explicitly configured host helper. The standard Compose deployment does not enable or install it. Do not mount `/var/run/docker.sock` into Stanlab as a shortcut: access to that socket effectively grants root control of the Docker host.
-
-When users open Stanlab through HTTPS, the configured origin must include the exact scheme and hostname, for example `https://stanlab.dpdns.org`. The login cookie is HTTP-only, SameSite=Strict, and expires no later than 15 minutes after sign-in.
+Development sessions are also in-memory. For a local login, run the setup script with `STANLAB_DATA_DIR` set to a writable directory.

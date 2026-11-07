@@ -1,38 +1,28 @@
 services:
-  stanlab-dash:
-    build: .
-    image: stanlab-dash:latest
+  stanlab:
+    image: ghcr.io/stanlysilas/stanlab-dash:latest
+    pull_policy: missing
     container_name: stanlab-dash
     restart: unless-stopped
     init: true
-    env_file:
-      - path: ./config/stanlab.env
-        required: true
-        format: raw
     environment:
-      NODE_ENV: production
       PORT: "3000"
       DASH_BIND_ADDRESS: 0.0.0.0
+      DASH_ORIGIN: ${DASH_ORIGIN:?Set DASH_ORIGIN in .env}
+      DASH_COOKIE_SECURE: ${DASH_COOKIE_SECURE:?Set DASH_COOKIE_SECURE in .env}
+      DASH_HOSTNAME: ${DASH_HOSTNAME:?Set DASH_HOSTNAME in .env}
+      STANLAB_DATA_DIR: /app/data/stanlab-dash
       XDG_DATA_HOME: /app/data
     ports:
-      - "${STANLAB_BIND_ADDRESS:-127.0.0.1}:${STANLAB_PORT:-35437}:3000"
+      - "${STANLAB_BIND_ADDRESS:?Set STANLAB_BIND_ADDRESS in .env}:${STANLAB_PORT:?Set STANLAB_PORT in .env}:3000"
     volumes:
       - stanlab-data:/app/data
-      - ./config/scripts.json:/app/config/scripts.json:ro
-      - ./scripts:/app/scripts:ro
-    networks:
-      - homelab
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s
       timeout: 3s
       start_period: 10s
       retries: 3
-
-networks:
-  homelab:
-    external: true
-    name: ${DASH_DOCKER_NETWORK:-nextcloud_default}
 
 volumes:
   stanlab-data:
