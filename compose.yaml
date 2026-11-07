@@ -1,0 +1,34 @@
+services:
+  stanlab-dash:
+    build: .
+    image: stanlab-dash:latest
+    container_name: stanlab-dash
+    restart: unless-stopped
+    init: true
+    user: "${DASH_UID:?Run ./stanlab install}:${DASH_GID:?Run ./stanlab install}"
+    env_file:
+      - path: .env
+        required: true
+        format: raw
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      DASH_BIND_ADDRESS: 0.0.0.0
+      DASH_HOST_AGENT_SOCKET: /run/stanlab-agent/agent.sock
+    ports:
+      - "127.0.0.1:${PORT:?Run ./stanlab install}:3000"
+    volumes:
+      - "${DASH_HOST_AGENT_DIR:?Run ./stanlab install}:/run/stanlab-agent:rw"
+    networks:
+      - stanlab
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
+
+networks:
+  stanlab:
+    external: true
+    name: ${DASH_DOCKER_NETWORK:?Run ./stanlab install to select a Docker network}

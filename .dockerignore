@@ -1,0 +1,10 @@
+.env
+.env.*
+node_modules
+.npm-cache
+.tmp
+.git
+.gitignore
+README.md
+scripts
+config

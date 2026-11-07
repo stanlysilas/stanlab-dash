@@ -10,6 +10,10 @@ import { fileURLToPath } from 'node:url';
 const projectRoot = path.dirname(fileURLToPath(import.meta.url));
 const serviceName = 'stanlab-dash.service';
 const servicePath = path.resolve(process.env.XDG_CONFIG_HOME ?? path.join(os.homedir(), '.config'), 'systemd', 'user', serviceName);
+const hostAgentServiceName = 'stanlab-dash-host-agent.service';
+const hostAgentServicePath = path.resolve(process.env.XDG_CONFIG_HOME ?? path.join(os.homedir(), '.config'), 'systemd', 'user', hostAgentServiceName);
+const composePath = path.join(projectRoot, 'compose.yaml');
+const composeEnvPath = path.join(projectRoot, '.stanlab-compose.env');
 const nodePath = await realpath(process.execPath);
 const nodeDirectory = path.dirname(nodePath);
 const args = process.argv.slice(2);
@@ -37,11 +41,13 @@ try {
     case 'restart':
     case 'status':
       requireInstalled();
-      invoke('systemctl', ['--user', ...(command === 'status' ? ['status', serviceName, '--no-pager'] : [command, serviceName])]);
+      if (isDockerDeployment()) dockerCompose(command === 'status' ? ['ps'] : [command]);
+      else invoke('systemctl', ['--user', ...(command === 'status' ? ['status', serviceName, '--no-pager'] : [command, serviceName])], 30_000);
       break;
     case 'logs':
       requireInstalled();
-      invoke('journalctl', ['--user', '-u', serviceName, ...(args.includes('--follow') || args.includes('-f') ? ['--follow'] : ['-n', '100', '--no-pager'])]);
+      if (isDockerDeployment()) dockerCompose(['logs', ...(args.includes('--follow') || args.includes('-f') ? ['--follow'] : ['--tail', '100'])]);
+      else invoke('journalctl', ['--user', '-u', serviceName, ...(args.includes('--follow') || args.includes('-f') ? ['--follow'] : ['-n', '100', '--no-pager'])]);
       break;
     case 'uninstall':
       await uninstall();
@@ -64,19 +70,19 @@ function printHelp() {
 Usage: ./stanlab <command>
 
 Commands:
-  install [--origin URL]   Install, configure, build, and start the dashboard service
+  install [--origin URL]   Install, configure, build, and start the dashboard
   setup                    Set or reset the dashboard username and password
   origin <http[s]://host>  Set the exact origin users open in their browser
-  start                    Start the user service
-  stop                     Stop the user service
-  restart                  Restart the user service
-  status                   Show service status
+  start                    Start Stanlab
+  stop                     Stop Stanlab
+  restart                  Restart Stanlab
+  status                   Show Stanlab status
   logs [--follow]          Show recent service logs, or follow them
-  uninstall                Remove the service unit; keeps project files and credentials
+  uninstall                Remove Stanlab services; keeps project files and credentials
   dev                      Start the development server
   help                     Show this help
 
-Install runs as the current user and does not use sudo. The service is managed by systemd --user.`);
+Install runs as the current user and does not use sudo. Docker hosts run Stanlab in Compose; a restricted systemd user helper handles host-only operations.`);
 }
 
 function readPackageVersion() {
@@ -97,8 +103,9 @@ function requireNpm() {
   if (result.error || result.status !== 0) throw new Error('npm is required internally to install and build this React/TypeScript application. Install Node.js with npm, then retry.');
 }
 
-function invoke(program, programArgs) {
-  const result = spawnSync(program, programArgs, { cwd: projectRoot, stdio: 'inherit', env: process.env });
+function invoke(program, programArgs, timeout = undefined) {
+  const result = spawnSync(program, programArgs, { cwd: projectRoot, stdio: 'inherit', env: process.env, ...(timeout ? { timeout } : {}) });
+  if (result.error?.code === 'ETIMEDOUT') throw new Error(`${program} ${programArgs.join(' ')} did not finish within ${Math.round(timeout / 1000)} seconds. Inspect ./stanlab status and ./stanlab logs for details.`);
   if (result.error) throw new Error(`Could not run ${program}: ${result.error.message}`);
   if (result.status !== 0) process.exitCode = result.status ?? 1;
 }
@@ -116,13 +123,23 @@ async function install(installArgs) {
   if (process.exitCode) throw new Error('The production build failed.');
 
   if (installArgs.includes('--reset-credentials') || !(await hasCredentials())) await setupCredentials();
+  console.log('Credentials are ready; selecting a dashboard port…');
   await chmod(path.join(projectRoot, '.env'), 0o600);
   const envText = await readFile(path.join(projectRoot, '.env'), 'utf8');
+  const dockerRuntime = detectDockerRuntime(envText);
+  const existingOrigin = readEnvValue(envText, 'DASH_ORIGIN');
   const configuredPort = readEnvValue(envText, 'PORT');
-  const preferredPort = configuredPort && /^\d+$/.test(configuredPort) && Number(configuredPort) >= 1024 && Number(configuredPort) <= 65535 ? Number(configuredPort) : 3000;
-  const bindAddress = readEnvValue(envText, 'DASH_BIND_ADDRESS') || '127.0.0.1';
-  const activeService = isManagedService() && spawnSync('systemctl', ['--user', 'is-active', '--quiet', serviceName], { stdio: 'ignore' }).status === 0;
-  const port = activeService ? preferredPort : await firstAvailablePort(preferredPort, bindAddress);
+  const configuredPortNumber = configuredPort && /^\d+$/.test(configuredPort) && Number(configuredPort) >= 1024 && Number(configuredPort) <= 65535 ? Number(configuredPort) : undefined;
+  const bindAddress = '127.0.0.1';
+  const activeService = dockerRuntime ? isManagedUnitActive(hostAgentServiceName) : isManagedUnitActive(serviceName);
+  let preferredPort = configuredPortNumber;
+  if (!activeService && preferredPort === 3000) preferredPort = undefined;
+  const directHttpOrigin = requestedOrigin ?? (existingOrigin !== 'http://localhost:5173' ? existingOrigin : undefined);
+  if (!activeService && directHttpOrigin) {
+    const parsedDirectOrigin = new URL(directHttpOrigin);
+    if (parsedDirectOrigin.protocol === 'http:' && parsedDirectOrigin.port && Number(parsedDirectOrigin.port) >= 1024 && (requestedOrigin || Number(parsedDirectOrigin.port) !== 3000)) preferredPort = Number(parsedDirectOrigin.port);
+  }
+  const port = activeService && preferredPort ? preferredPort : await firstAvailablePort(preferredPort, bindAddress);
   if (requestedOrigin) {
     const parsedOrigin = new URL(requestedOrigin);
     const originIsLocal = ['localhost', '127.0.0.1'].includes(parsedOrigin.hostname);
@@ -130,28 +147,63 @@ async function install(installArgs) {
       throw new Error(`The requested local origin uses port ${parsedOrigin.port}, but the selected dashboard port is ${port}. Choose another origin or free that port.`);
     }
   }
-  const existingOrigin = readEnvValue(envText, 'DASH_ORIGIN');
   let origin = requestedOrigin ?? (existingOrigin && existingOrigin !== 'http://localhost:5173' && existingOrigin !== 'http://localhost:3000'
     ? existingOrigin
     : `http://localhost:${port}`);
   if (!requestedOrigin && existingOrigin) {
     const parsedExistingOrigin = new URL(existingOrigin);
-    if (parsedExistingOrigin.protocol === 'http:' && parsedExistingOrigin.port && Number(parsedExistingOrigin.port) === preferredPort && port !== preferredPort) {
+    if (parsedExistingOrigin.protocol === 'http:' && parsedExistingOrigin.port && [configuredPortNumber, 3000].includes(Number(parsedExistingOrigin.port)) && port !== Number(parsedExistingOrigin.port)) {
       parsedExistingOrigin.port = String(port);
       origin = parsedExistingOrigin.origin;
     }
   }
-  await writeEnvValues({ PORT: String(port), DASH_BIND_ADDRESS: bindAddress, DASH_ORIGIN: origin, DASH_COOKIE_SECURE: origin.startsWith('https://') ? 'true' : 'false' });
+  const hostAgentDirectory = path.join(os.homedir(), '.local', 'run', 'stanlab-dash');
+  const hostAgentSocket = path.join(hostAgentDirectory, 'agent.sock');
+  const envValues = {
+    PORT: String(port),
+    DASH_BIND_ADDRESS: dockerRuntime ? '0.0.0.0' : bindAddress,
+    DASH_ORIGIN: origin,
+    DASH_COOKIE_SECURE: origin.startsWith('https://') ? 'true' : 'false',
+    DASH_DEPLOYMENT_MODE: dockerRuntime ? 'docker' : 'native',
+    SESSION_STORE: dockerRuntime ? 'redis' : 'memory',
+    REDIS_URL: dockerRuntime?.redisUrl ?? '',
+    DASH_DOCKER_NETWORK: dockerRuntime?.network ?? '',
+    DASH_UID: String(os.userInfo().uid),
+    DASH_GID: String(os.userInfo().gid),
+    DASH_HOST_AGENT_DIR: dockerRuntime ? hostAgentDirectory : '',
+    DASH_HOST_AGENT_SOCKET: dockerRuntime ? hostAgentSocket : '',
+  };
+  await writeEnvValues(envValues);
+  if (dockerRuntime) await writeComposeEnv(envValues);
 
-  const manager = spawnSync('systemctl', ['--user', 'show-environment'], { stdio: 'ignore' });
-  if (manager.error || manager.status !== 0) throw new Error('The systemd user manager is unavailable. Sign into your Linux user session and rerun ./stanlab install.');
-  await mkdir(path.dirname(servicePath), { recursive: true, mode: 0o700 });
-  if (exists(servicePath) && !isManagedService()) throw new Error(`A different ${serviceName} already exists at ${servicePath}; it was left untouched.`);
-  await writeFile(servicePath, serviceUnit(), { mode: 0o644 });
-  invoke('systemctl', ['--user', 'daemon-reload']);
-  if (process.exitCode) throw new Error('systemd could not reload the user service configuration.');
-  invoke('systemctl', ['--user', 'enable', '--now', serviceName]);
-  if (process.exitCode) throw new Error('The service unit was installed but did not start. Run ./stanlab status and ./stanlab logs for details.');
+  await requireSystemdUserManager();
+  if (dockerRuntime) {
+    const redisDatabase = new URL(dockerRuntime.redisUrl).pathname.slice(1) || '0';
+    console.log(`Using Docker Compose on ${dockerRuntime.network}; Redis sessions use ${dockerRuntime.redisName} database ${redisDatabase}.`);
+    if (isManagedService()) {
+      invoke('systemctl', ['--user', 'disable', '--now', serviceName], 30_000);
+      if (process.exitCode) throw new Error('Could not stop the legacy Stanlab service before switching to Docker.');
+      await (await import('node:fs/promises')).unlink(servicePath);
+    }
+    await installHostAgent(hostAgentSocket);
+    console.log('Validating the Docker Compose configuration…');
+    dockerCompose(['config', '--quiet'], 15_000);
+    if (process.exitCode) throw new Error('Docker Compose configuration is invalid. Check REDIS_URL and DASH_DOCKER_NETWORK in .env.');
+    console.log('Building and starting the Stanlab container…');
+    dockerCompose(['up', '--detach', '--build', '--wait', '--wait-timeout', '90'], 180_000);
+    if (process.exitCode) throw new Error('The Stanlab container did not become healthy. Run ./stanlab logs and ./stanlab status.');
+  } else {
+    console.log('Using the native systemd service for this development host.');
+    await mkdir(path.dirname(servicePath), { recursive: true, mode: 0o700 });
+    if (exists(servicePath) && !isManagedService()) throw new Error(`A different ${serviceName} already exists at ${servicePath}; it was left untouched.`);
+    await writeFile(servicePath, serviceUnit(), { mode: 0o644 });
+    console.log('Reloading the user service manager…');
+    invoke('systemctl', ['--user', 'daemon-reload'], 15_000);
+    if (process.exitCode) throw new Error('systemd could not reload the user service configuration.');
+    console.log('Enabling and starting Stanlab Dash…');
+    invoke('systemctl', ['--user', 'enable', '--now', serviceName], 30_000);
+    if (process.exitCode) throw new Error('The service unit was installed but did not start. Run ./stanlab status and ./stanlab logs for details.');
+  }
 
   console.log(`\nStanlab Dash is installed and running at ${origin}`);
   console.log(`Local service address: http://127.0.0.1:${port}`);
@@ -159,23 +211,122 @@ async function install(installArgs) {
   printLingerHint();
 }
 
+function detectDockerRuntime(envText) {
+  const requestedMode = readEnvValue(envText, 'DASH_DEPLOYMENT_MODE');
+  if (requestedMode && !['docker', 'native'].includes(requestedMode)) throw new Error('DASH_DEPLOYMENT_MODE must be docker or native.');
+  if (requestedMode === 'native') return null;
+  const compose = spawnSync('docker', ['compose', 'version'], { cwd: projectRoot, encoding: 'utf8', timeout: 5_000 });
+  if (compose.error || compose.status !== 0) {
+    if (requestedMode === 'docker' || readEnvValue(envText, 'SESSION_STORE') === 'redis') throw new Error('Docker Compose is required for Docker deployment. Install Docker Compose v2, or set DASH_DEPLOYMENT_MODE=native for this host.');
+    return null;
+  }
+  const containers = spawnSync('docker', ['ps', '--format', '{{.Names}}\t{{.Image}}\t{{.Networks}}'], { cwd: projectRoot, encoding: 'utf8', timeout: 8_000 });
+  if (containers.error || containers.status !== 0) throw new Error('Docker is installed but this user cannot inspect its containers. Check Docker group access.');
+  const redisContainers = containers.stdout.split(/\r?\n/).map((line) => {
+    const [name, image, networks] = line.split('\t');
+    return { name, image, networks: networks?.split(',').filter(Boolean) ?? [] };
+  }).filter((item) => item.name && /(^|\/)redis(?::|$)/i.test(item.image ?? ''));
+  const configuredUrl = readEnvValue(envText, 'REDIS_URL');
+  const configuredNetwork = readEnvValue(envText, 'DASH_DOCKER_NETWORK');
+  const dockerRequested = requestedMode === 'docker' || readEnvValue(envText, 'SESSION_STORE') === 'redis' || Boolean(configuredUrl) || redisContainers.length > 0;
+  if (!dockerRequested) return null;
+  if (redisContainers.length > 1 && (!configuredUrl || !configuredNetwork)) {
+    throw new Error(`Found multiple Redis containers (${redisContainers.map((item) => item.name).join(', ')}). Set REDIS_URL and DASH_DOCKER_NETWORK in .env to select the intended one.`);
+  }
+  const redisContainer = redisContainers.length === 1 ? redisContainers[0] : undefined;
+  const redisUrl = configuredUrl || (redisContainer ? `redis://${redisContainer.name}:6379/1` : '');
+  if (!redisUrl) throw new Error('Docker mode requires REDIS_URL in .env.');
+  const parsedRedisUrl = new URL(redisUrl);
+  if (!['redis:', 'rediss:'].includes(parsedRedisUrl.protocol) || !parsedRedisUrl.hostname) throw new Error('REDIS_URL must be a redis:// or rediss:// URL.');
+  const network = configuredNetwork || redisContainer?.networks[0] || '';
+  if (!network || !/^[A-Za-z0-9_.-]+$/.test(network)) throw new Error('Docker mode requires a valid DASH_DOCKER_NETWORK shared with Redis.');
+  if (!redisContainer && !configuredUrl) throw new Error('No Redis service was found. Set REDIS_URL and DASH_DOCKER_NETWORK in .env.');
+  const networkCheck = spawnSync('docker', ['network', 'inspect', network], { cwd: projectRoot, stdio: 'ignore', timeout: 8_000 });
+  if (networkCheck.error || networkCheck.status !== 0) throw new Error(`Docker network ${network} is unavailable. Check DASH_DOCKER_NETWORK in .env.`);
+  return { network, redisName: redisContainer?.name ?? parsedRedisUrl.hostname, redisUrl };
+}
+
+async function requireSystemdUserManager() {
+  console.log('Checking the systemd user manager…');
+  const manager = spawnSync('systemctl', ['--user', 'show-environment'], { stdio: 'ignore', timeout: 10_000 });
+  if (manager.error?.code === 'ETIMEDOUT') throw new Error('The systemd user manager did not respond within 10 seconds. Credentials are saved; sign into the Linux user session and retry.');
+  if (manager.error || manager.status !== 0) throw new Error('The systemd user manager is unavailable. Credentials are saved; sign into the Linux user session and retry.');
+}
+
+async function installHostAgent(socketPath) {
+  await mkdir(path.dirname(hostAgentServicePath), { recursive: true, mode: 0o700 });
+  if (exists(hostAgentServicePath) && !isManagedHostAgent()) throw new Error(`A different ${hostAgentServiceName} already exists at ${hostAgentServicePath}; it was left untouched.`);
+  await writeFile(hostAgentServicePath, hostAgentUnit(socketPath), { mode: 0o644 });
+  invoke('systemctl', ['--user', 'daemon-reload'], 15_000);
+  if (process.exitCode) throw new Error('systemd could not reload the host helper configuration.');
+  invoke('systemctl', ['--user', 'enable', '--now', hostAgentServiceName], 30_000);
+  if (process.exitCode) throw new Error('The host helper did not start. Check its user service status and logs.');
+  invoke('systemctl', ['--user', 'restart', hostAgentServiceName], 30_000);
+  if (process.exitCode) throw new Error('The host helper could not restart after the update.');
+}
+
+function hostAgentUnit(socketPath) {
+  const agentEntry = path.join(projectRoot, 'dist', 'server', 'host-agent.js');
+  const searchPath = [nodeDirectory, process.env.PATH, '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'].filter(Boolean).join(path.delimiter);
+  return `[Unit]
+# Managed by the Stanlab Dash CLI.
+Description=Stanlab Dash restricted Legion host helper
+
+[Service]
+Type=simple
+WorkingDirectory=${unitPath(projectRoot)}
+Environment=NODE_ENV=production
+Environment=${unitQuote(`HOME=${os.homedir()}`)}
+Environment=${unitQuote(`PATH=${searchPath}`)}
+Environment=${unitQuote(`DASH_HOST_AGENT_SOCKET=${socketPath}`)}
+ExecStart=${unitQuote(nodePath)} ${unitQuote(agentEntry)}
+Restart=on-failure
+RestartSec=3
+UMask=0077
+
+[Install]
+WantedBy=default.target
+`;
+}
+
+function dockerCompose(composeArgs, timeout = undefined) {
+  invoke('docker', ['compose', '--env-file', composeEnvPath, '--project-name', 'stanlab-dash', '--file', composePath, ...composeArgs], timeout);
+}
+
+function isDockerDeployment() {
+  try { return readEnvValue(readFileSync(path.join(projectRoot, '.env'), 'utf8'), 'DASH_DEPLOYMENT_MODE') === 'docker'; }
+  catch { return false; }
+}
+
+function isManagedHostAgent() {
+  try { return readFileSync(hostAgentServicePath, 'utf8').includes('# Managed by the Stanlab Dash CLI.'); }
+  catch { return false; }
+}
+
 async function setupCredentials() {
   requireSupportedNode();
   console.log('Set the single dashboard account. Password input is hidden.');
   invoke(process.execPath, [path.join(projectRoot, 'scripts', 'setup-auth.mjs')]);
   if (process.exitCode) throw new Error('Credential setup did not complete.');
-  if (isManagedService()) {
-    const active = spawnSync('systemctl', ['--user', 'is-active', '--quiet', serviceName], { stdio: 'ignore' });
-    if (active.status === 0) invoke('systemctl', ['--user', 'restart', serviceName]);
-  }
+  if (isDockerDeployment()) {
+    dockerCompose(['up', '--detach', '--force-recreate', '--wait', '--wait-timeout', '60'], 120_000);
+  } else if (isManagedService() && isManagedUnitActive(serviceName)) invoke('systemctl', ['--user', 'restart', serviceName], 30_000);
+}
+
+function isManagedUnitActive(name) {
+  const result = spawnSync('systemctl', ['--user', 'is-active', '--quiet', name], { stdio: 'ignore', timeout: 5_000 });
+  if (result.error?.code === 'ETIMEDOUT') throw new Error('The systemd user manager did not respond to the service status check within 5 seconds. Credentials are saved; check `systemctl --user status` and retry.');
+  if (result.error) throw new Error(`Could not check the Stanlab service state: ${result.error.message}`);
+  return result.status === 0;
 }
 
 async function setOrigin(value) {
   const origin = validateOrigin(value);
   if (!(await hasCredentials())) throw new Error('Run ./stanlab setup to create the dashboard account first.');
   await writeEnvValues({ DASH_ORIGIN: origin, DASH_COOKIE_SECURE: origin.startsWith('https://') ? 'true' : 'false' });
-  const installed = isManagedService();
-  if (installed) invoke('systemctl', ['--user', 'restart', serviceName]);
+  const installed = isDockerDeployment() ? exists(composePath) : isManagedService();
+  if (isDockerDeployment() && installed) dockerCompose(['up', '--detach', '--force-recreate', '--wait', '--wait-timeout', '60'], 120_000);
+  else if (installed) invoke('systemctl', ['--user', 'restart', serviceName], 30_000);
   console.log(`Dashboard origin set to ${origin}${installed ? '; service restarted.' : '.'}`);
 }
 
@@ -235,6 +386,15 @@ async function writeEnvValues(values) {
   await rename(temporary, envPath);
 }
 
+async function writeComposeEnv(values) {
+  const keys = ['PORT', 'DASH_UID', 'DASH_GID', 'DASH_HOST_AGENT_DIR', 'DASH_DOCKER_NETWORK'];
+  const contents = `${keys.map((key) => `${key}=${values[key]}`).join('\n')}\n`;
+  const temporary = `${composeEnvPath}.${process.pid}.tmp`;
+  await writeFile(temporary, contents, { mode: 0o600, flag: 'wx' });
+  await chmod(temporary, 0o600);
+  await rename(temporary, composeEnvPath);
+}
+
 async function hasCredentials() {
   const text = await readFile(path.join(projectRoot, '.env'), 'utf8').catch(() => '');
   return Boolean(readEnvValue(text, 'DASH_USERNAME') && /^scrypt\$[0-9a-f]{32}\$[0-9a-f]{128}$/.test(readEnvValue(text, 'DASH_PASSWORD_HASH') ?? ''));
@@ -245,17 +405,30 @@ function readEnvValue(text, key) {
 }
 
 async function uninstall() {
-  if (!isManagedService()) throw new Error('Stanlab Dash service is not installed, or that unit is managed by something else.');
-  invoke('systemctl', ['--user', 'disable', '--now', 'stanlab-dash.service']);
-  if (process.exitCode) throw new Error('Could not stop and disable the service; its unit file was left in place.');
   const { unlink } = await import('node:fs/promises');
+  if (isDockerDeployment()) {
+    if (!exists(composePath)) throw new Error('Stanlab Compose file was not found in this checkout.');
+    dockerCompose(['down'], 60_000);
+    if (process.exitCode) throw new Error('Could not stop and remove the Stanlab container.');
+    if (isManagedHostAgent()) {
+      invoke('systemctl', ['--user', 'disable', '--now', hostAgentServiceName], 30_000);
+      if (process.exitCode) throw new Error('Could not stop the host helper; its unit file was left in place.');
+      await unlink(hostAgentServicePath);
+      invoke('systemctl', ['--user', 'daemon-reload'], 15_000);
+    }
+    console.log('Stanlab container and host helper removed. Project files, credentials, Store app data, and app containers were kept.');
+    return;
+  }
+  if (!isManagedService()) throw new Error('Stanlab Dash service is not installed, or that unit is managed by something else.');
+  invoke('systemctl', ['--user', 'disable', '--now', serviceName], 30_000);
+  if (process.exitCode) throw new Error('Could not stop and disable the service; its unit file was left in place.');
   await unlink(servicePath);
-  invoke('systemctl', ['--user', 'daemon-reload']);
+  invoke('systemctl', ['--user', 'daemon-reload'], 15_000);
   console.log('Service removed. Project files and .env credentials were kept.');
 }
 
 function requireInstalled() {
-  if (!isManagedService()) throw new Error('Service is not installed. Run ./stanlab install first.');
+  if (isDockerDeployment() ? !exists(composePath) : !isManagedService()) throw new Error('Service is not installed. Run ./stanlab install first.');
 }
 
 function exists(file) {
@@ -273,10 +446,16 @@ function optionValue(optionArgs, name) {
 }
 
 async function firstAvailablePort(preferred, bindAddress) {
-  for (let port = preferred; port <= Math.min(preferred + 999, 65535); port += 1) {
-    if (await isPortAvailable(port, bindAddress)) return port;
-  }
-  throw new Error(`No available dashboard port was found starting at ${preferred}. Set PORT in .env and retry.`);
+  if (preferred && await isPortAvailable(preferred, bindAddress)) return preferred;
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.once('error', reject);
+    server.listen(0, bindAddress, () => {
+      const address = server.address();
+      const port = typeof address === 'object' && address ? address.port : 0;
+      server.close((error) => error ? reject(error) : resolve(port));
+    });
+  });
 }
 
 function isPortAvailable(port, bindAddress) {
@@ -289,8 +468,8 @@ function isPortAvailable(port, bindAddress) {
 
 function printLingerHint() {
   const user = os.userInfo().username;
-  const result = spawnSync('loginctl', ['show-user', user, '--property=Linger', '--value'], { encoding: 'utf8' });
+  const result = spawnSync('loginctl', ['show-user', user, '--property=Linger', '--value'], { encoding: 'utf8', timeout: 5_000 });
   if (result.status === 0 && result.stdout.trim() !== 'yes') {
-    console.log(`\nTo keep the dashboard running after logout or when GDM stops, an administrator can enable user lingering with: sudo loginctl enable-linger ${user}`);
+    console.log(`\nTo keep the restricted host helper available after logout, an administrator can enable user lingering with: sudo loginctl enable-linger ${user}`);
   }
 }

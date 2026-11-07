@@ -53,6 +53,7 @@ function promptHidden(prompt) {
     const finish = (error) => {
       input.off('data', onData);
       input.setRawMode(false);
+      input.pause();
       process.stdout.write('\n');
       if (error) reject(error); else resolve(value);
     };
