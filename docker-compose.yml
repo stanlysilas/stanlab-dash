@@ -12,7 +12,13 @@ services:
       DASH_COOKIE_SECURE: ${DASH_COOKIE_SECURE:?Set DASH_COOKIE_SECURE in .env}
       DASH_HOSTNAME: ${DASH_HOSTNAME:?Set DASH_HOSTNAME in .env}
       STANLAB_DATA_DIR: /app/data/stanlab-dash
+      STANLAB_DISK_PATH: /app/data
       XDG_DATA_HOME: /app/data
+      # For NVIDIA hosts with NVIDIA Container Toolkit, enable GPU telemetry:
+      # NVIDIA_VISIBLE_DEVICES: all
+      # NVIDIA_DRIVER_CAPABILITIES: utility
+    # Also enable this line for NVIDIA hosts with NVIDIA Container Toolkit:
+    # gpus: all
     ports:
       - "${STANLAB_BIND_ADDRESS:?Set STANLAB_BIND_ADDRESS in .env}:${STANLAB_PORT:?Set STANLAB_PORT in .env}:3000"
     volumes:

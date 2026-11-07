@@ -118,7 +118,7 @@ async function findEngine(): Promise<Engine | null> {
 
 async function requireEngine() {
   const engine = await findEngine();
-  if (!engine) throw new Error('No supported Compose runtime is ready. Install Docker Compose v2 or Podman with a Compose provider on the server that runs Stanlab, then restart Stanlab.');
+  if (!engine) throw new Error('The standalone Stanlab container is not connected to the host Docker engine. Deploy apps with your own Compose files and add their URLs to My Apps.');
   return engine;
 }
 

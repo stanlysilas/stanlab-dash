@@ -1,4 +1,4 @@
-FROM node:24-alpine AS build
+FROM node:24-bookworm-slim AS build
 
 WORKDIR /app
 COPY package.json package-lock.json ./
@@ -6,7 +6,7 @@ RUN npm ci --no-audit --no-fund
 COPY . .
 RUN npm run build
 
-FROM node:24-alpine
+FROM node:24-bookworm-slim
 
 WORKDIR /app
 ENV NODE_ENV=production \
@@ -15,6 +15,10 @@ ENV NODE_ENV=production \
     STANLAB_DATA_DIR=/app/data/stanlab-dash \
     XDG_DATA_HOME=/app/data
 LABEL org.opencontainers.image.source="https://github.com/stanlysilas/stanlab-dash"
+
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends bash coreutils \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --no-audit --no-fund && npm cache clean --force

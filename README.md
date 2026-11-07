@@ -105,7 +105,20 @@ docker compose down
 
 ## What runs inside the image
 
-The image runs as the unprivileged `node` user. The starter `Hello World` script runs inside the container. Scripts are allowlisted in `config/scripts.json`, run without root privileges, and have a 30-second timeout. System metrics reflect what the container can see. Host GDM controls and installing/managing other Docker containers are not enabled; the image does not mount the Docker socket or install a host helper.
+The image runs as the unprivileged `node` user and includes Bash for approved scripts. The starter `Hello World` script runs inside the container. Scripts are allowlisted in `config/scripts.json`, run without root privileges, and have a 30-second timeout. CPU and memory values are container-visible; disk usage is measured from the persistent data volume.
+
+GPU telemetry is optional. On an NVIDIA host with the NVIDIA Container Toolkit configured, add `gpus: all` at the service level and merge the NVIDIA variables into the existing `environment` mapping:
+
+```yaml
+    gpus: all
+```
+
+```yaml
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: utility
+```
+
+The Store page is a catalog in the standalone image. Install catalog apps using your own Compose files, then add their URLs under **My Apps**. The image does not mount the Docker socket or connect to a host helper, so it cannot install or manage other containers or control host GDM.
 
 The wallpaper stays in the browser's IndexedDB. The login cookie is HTTP-only, SameSite=Strict, and expires no later than 15 minutes after sign-in.
 

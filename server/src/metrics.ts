@@ -35,7 +35,8 @@ export async function getMetrics() {
 
 async function readDisk() {
   try {
-    const { stdout } = await execFileAsync('/usr/bin/df', ['-Pk', '/'], { timeout: 1500, maxBuffer: 20_000 });
+    const diskPath = process.env.STANLAB_DISK_PATH ?? process.env.XDG_DATA_HOME ?? '/';
+    const { stdout } = await execFileAsync('/usr/bin/df', ['-Pk', diskPath], { timeout: 1500, maxBuffer: 20_000 });
     const fields = stdout.trim().split('\n').at(-1)?.trim().split(/\s+/);
     if (!fields || fields.length < 6) throw new Error('Unexpected df output');
     const totalBytes = Number(fields[1]) * 1024;
