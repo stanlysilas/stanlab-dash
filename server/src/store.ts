@@ -1,5 +1,4 @@
 import { spawn } from 'node:child_process';
-import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
@@ -26,7 +25,6 @@ const definitions: StoreDefinition[] = [
   { id: 'uptime-kuma', name: 'Uptime Kuma', category: 'Monitoring', description: 'A self-hosted status monitor for services and network endpoints.', image: 'louislam/uptime-kuma:2', containerPort: 3001, volumes: [{ name: 'data', target: '/app/data' }], notes: ['Persistent app data is stored in a managed container volume.'] },
   { id: 'home-assistant', name: 'Home Assistant', category: 'Home automation', description: 'Home automation with a local web interface and a large integration ecosystem.', image: 'ghcr.io/home-assistant/home-assistant:stable', containerPort: 8123, volumes: [{ name: 'config', target: '/config' }], notes: ['Uses an automatically assigned host port mapped to its web interface on 8123. Some local device discovery integrations may require additional network configuration.', 'The app and its integrations are configured in Home Assistant after installation.'] },
 ];
-const reservedPorts = new Set<number>();
 
 export async function listStoreApps() {
   const engine = await findEngine();
@@ -54,25 +52,22 @@ export async function installStoreApp(id: string) {
   const state = await readState();
   const existing = state.apps.find((record) => record.id === id);
   if (existing) throw new Error(`${definition.name} is already installed.`);
-  const port = await availablePort(state.apps.map((record) => record.port));
   const appDir = path.join(storeRoot, id);
   await mkdir(storeRoot, { recursive: true, mode: 0o700 });
   await chmod(storeRoot, 0o700);
   await mkdir(appDir, { recursive: true, mode: 0o700 });
   await chmod(appDir, 0o700);
-  const record: InstalledRecord = { id, port, installedAt: new Date().toISOString() };
   try {
-    await writeFile(path.join(appDir, 'compose.yaml'), composeManifest(definition, port), { mode: 0o600 });
-    await saveState({ apps: [...state.apps, record] });
+    await writeFile(path.join(appDir, 'compose.yaml'), composeManifest(definition), { mode: 0o600 });
     await compose(engine, id, ['up', '-d']);
+    const port = await publishedPort(engine, id, definition.containerPort);
+    const record: InstalledRecord = { id, port, installedAt: new Date().toISOString() };
+    await saveState({ apps: [...state.apps, record] });
     return { ok: true, app: { ...definition, installed: true, status: 'running' as const, port, installedAt: record.installedAt } };
   } catch (error) {
     await compose(engine, id, ['down']).catch(() => undefined);
-    await saveState({ apps: state.apps });
     await rm(appDir, { recursive: true, force: true });
     throw error;
-  } finally {
-    reservedPorts.delete(port);
   }
 }
 
@@ -110,15 +105,19 @@ async function findEngine(): Promise<Engine | null> {
     { name: 'Podman Compose', command: 'podman', prefix: ['compose'] },
   ];
   for (const candidate of candidates) {
-    try { await run(candidate.command, [...candidate.prefix, 'version'], 8_000); return candidate; }
-    catch { /* Try the next supported engine/provider. */ }
+    try {
+      await run(candidate.command, [...candidate.prefix, 'version'], 8_000);
+      const infoArgs = candidate.command === 'docker' ? ['info', '--format', '{{.ServerVersion}}'] : ['info', '--format', 'json'];
+      await run(candidate.command, infoArgs, 8_000);
+      return candidate;
+    } catch { /* Try the next supported engine/provider. */ }
   }
   return null;
 }
 
 async function requireEngine() {
   const engine = await findEngine();
-  if (!engine) throw new Error('The standalone Stanlab container is not connected to the host Docker engine. Deploy apps with your own Compose files and add their URLs to My Apps.');
+  if (!engine) throw new Error('Compose runtime unavailable: Stanlab cannot reach a Docker or Podman engine. Enable the optional App Store Compose overlay and verify Docker socket access.');
   return engine;
 }
 
@@ -144,8 +143,9 @@ function run(command: string, args: string[], timeoutMs: number, cwd?: string): 
   });
 }
 
-function composeManifest(definition: StoreDefinition, port: number) {
-  const ports = `    ports:\n      - "${port}:${definition.containerPort}"\n`;
+function composeManifest(definition: StoreDefinition) {
+  // Let the host Docker daemon allocate the published port; this process runs in a different network namespace.
+  const ports = `    ports:\n      - "${definition.containerPort}"\n`;
   const volumes = definition.volumes.map(({ name, target }) => `      - ${name}:${target}`).join('\n');
   const declaredVolumes = definition.volumes.map(({ name }) => `  ${name}:`).join('\n');
   return `services:\n  app:\n    image: ${definition.image}\n    restart: unless-stopped\n${ports}    volumes:\n${volumes}\n    logging:\n      driver: json-file\n      options:\n        max-size: "10m"\n        max-file: "3"\n\nvolumes:\n${declaredVolumes}\n`;
@@ -170,36 +170,11 @@ async function saveState(state: StoreState) {
   await rename(temporary, statePath);
 }
 
-async function availablePort(usedPorts: number[]) {
-  const used = new Set([...usedPorts, ...reservedPorts]);
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    const port = await nextEphemeralPort();
-    if (!used.has(port) && await portIsFree(port)) {
-      reservedPorts.add(port);
-      return port;
-    }
-  }
-  throw new Error('The operating system did not provide a free port for this app.');
-}
-
-function nextEphemeralPort() {
-  return new Promise<number>((resolve, reject) => {
-    const server = net.createServer();
-    server.once('error', reject);
-    server.listen(0, '0.0.0.0', () => {
-      const address = server.address();
-      const port = typeof address === 'object' && address ? address.port : 0;
-      server.close((error) => error ? reject(error) : resolve(port));
-    });
-  });
-}
-
-function portIsFree(port: number) {
-  return new Promise<boolean>((resolve) => {
-    const server = net.createServer();
-    server.once('error', () => resolve(false));
-    server.listen(port, '0.0.0.0', () => server.close(() => resolve(true)));
-  });
+async function publishedPort(engine: Engine, id: string, containerPort: number) {
+  const output = await compose(engine, id, ['port', 'app', String(containerPort)]);
+  const match = output.trim().match(/:(\d+)\s*$/);
+  if (!match) throw new Error('Compose started the app but did not report its published host port.');
+  return Number(match[1]);
 }
 
 type SavedLauncher = { id: string; name: string; url: string };

@@ -118,7 +118,24 @@ GPU telemetry is optional. On an NVIDIA host with the NVIDIA Container Toolkit c
       NVIDIA_DRIVER_CAPABILITIES: utility
 ```
 
-The Store page is a catalog in the standalone image. Install catalog apps using your own Compose files, then add their URLs under **My Apps**. The image does not mount the Docker socket or connect to a host helper, so it cannot install or manage other containers or control host GDM.
+### Enable App Store installs (optional)
+
+By default Stanlab stays isolated from the host Docker daemon. To enable the curated Store's Install/Start/Stop/Update/Remove actions, opt in by merging `docker-compose.app-store.yml` when starting Stanlab. This gives Stanlab access to the Docker Engine API. Docker warns that daemon access can permit host filesystem changes, so enable this only for a trusted, up-to-date Stanlab instance. The Store accepts only built-in catalog IDs and fixed Compose definitions; it does not accept arbitrary Compose files or shell commands.
+
+First, find the numeric group ID of the host Docker socket and add it to the `.env` file in your Compose directory:
+
+```bash
+stat -c '%g' /var/run/docker.sock
+```
+
+Set `DOCKER_GID` in `.env` to that number. The overlay defaults to `/var/run/docker.sock`; set `DOCKER_SOCKET_PATH` if your Docker socket is elsewhere. Then start Stanlab with both Compose files:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.app-store.yml config --quiet
+docker compose -f docker-compose.yml -f docker-compose.app-store.yml up -d
+```
+
+Keep using both `-f` options for later `up`, `pull`, and other Compose operations. Without this overlay, Store entries remain a catalog and can be deployed manually with your own Compose files; add their URLs under **My Apps**.
 
 The wallpaper stays in the browser's IndexedDB. The login cookie is HTTP-only, SameSite=Strict, and expires no later than 15 minutes after sign-in.
 

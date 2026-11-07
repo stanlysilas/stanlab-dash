@@ -1,3 +1,5 @@
+FROM docker:29-cli AS docker-cli
+
 FROM node:24-bookworm-slim AS build
 
 WORKDIR /app
@@ -22,6 +24,9 @@ RUN apt-get update \
 
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --no-audit --no-fund && npm cache clean --force
+COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
+RUN mkdir -p /usr/local/libexec/docker/cli-plugins
+COPY --from=docker-cli /usr/local/libexec/docker/cli-plugins/docker-compose /usr/local/libexec/docker/cli-plugins/docker-compose
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/config ./config
 COPY --from=build /app/scripts/hello-world.sh ./scripts/hello-world.sh
