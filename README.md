@@ -41,7 +41,7 @@ DASH_COOKIE_SECURE=true
 The Redis container must be reachable on `DASH_DOCKER_NETWORK`. This setup uses database 1 and the `stanlab:session:` key prefix. Compose checks the configuration and starts the container:
 
 ```bash
-docker compose config
+docker compose config --quiet
 docker compose up -d --build
 docker compose ps
 docker compose logs -f
