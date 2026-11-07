@@ -1,0 +1,9 @@
+{
+  "scripts": [
+    {
+      "id": "hello-world",
+      "label": "Hello World",
+      "file": "hello-world.sh"
+    }
+  ]
+}

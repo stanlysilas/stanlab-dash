@@ -1,0 +1,43 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}
+
+:root { --dashboard-border: #343940; --dashboard-surface: rgb(20 22 25 / 85%); --dashboard-sub-surface: rgb(17 19 21 / 65%); color-scheme: dark; font-family: var(--font-sans); background: #101214; color: #f4f4f5; font-synthesis: none; text-rendering: optimizeLegibility; }
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 320px; min-height: 100vh; }
+button, input { font: inherit; }
+::selection { background: #a3e635; color: #111510; }
+
+.dashboard-shell { position: relative; isolation: isolate; min-height: 100vh; background: #101214; }
+.dashboard-shell.has-wallpaper::before { position: fixed; z-index: -1; inset: 0; content: ""; background-image: linear-gradient(rgba(16, 18, 20, 0.62), rgba(16, 18, 20, 0.78)), var(--wallpaper-image); background-position: center; background-size: cover; background-repeat: no-repeat; }
+.dashboard-panel {
+  width: 100%;
+  border: 1px solid var(--dashboard-border);
+  border-radius: 0.75rem;
+  background-color: var(--dashboard-surface);
+  padding: 1rem;
+  box-shadow: 0 10px 30px rgb(0 0 0 / 12%);
+  backdrop-filter: blur(12px);
+}
+.dashboard-panel-title { color: #f4f4f5; font-size: 0.875rem; font-weight: 600; line-height: 1.25rem; }
+.dashboard-subpanel {
+  min-width: 0;
+  border: 1px solid var(--dashboard-border);
+  border-radius: 0.75rem;
+  background-color: var(--dashboard-sub-surface);
+  padding: 1rem;
+}
+.dashboard-launcher {
+  border: 1px solid var(--dashboard-border);
+  border-radius: 0.75rem;
+}
+.dashboard-shell.has-wallpaper .dashboard-panel,
+.dashboard-shell.has-wallpaper .dashboard-subpanel { background-color: rgb(20 22 25 / 82%); }
+.dashboard-shell.has-wallpaper .dashboard-launcher { background-color: rgb(20 22 25 / 68%); }
+@media (min-width: 640px) { .dashboard-panel { padding: 1.25rem; } }
+
+.dashboard-catalog { border: 1px solid var(--dashboard-border); border-radius: 0.75rem; background-color: var(--dashboard-sub-surface); padding: 1rem; }
+.dashboard-catalog-entry { min-height: 4.25rem; border: 1px solid var(--dashboard-border); border-radius: 0.75rem; background-color: rgb(20 22 25 / 72%); padding: 0.625rem 0.75rem; }
