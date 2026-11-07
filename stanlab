@@ -12,8 +12,10 @@ const serviceName = 'stanlab-dash.service';
 const servicePath = path.resolve(process.env.XDG_CONFIG_HOME ?? path.join(os.homedir(), '.config'), 'systemd', 'user', serviceName);
 const hostAgentServiceName = 'stanlab-dash-host-agent.service';
 const hostAgentServicePath = path.resolve(process.env.XDG_CONFIG_HOME ?? path.join(os.homedir(), '.config'), 'systemd', 'user', hostAgentServiceName);
-const composePath = path.join(projectRoot, 'compose.yaml');
-const composeEnvPath = path.join(projectRoot, '.stanlab-compose.env');
+const legacyComposePath = path.join(projectRoot, 'compose.yaml');
+const legacyComposeEnvPath = path.join(projectRoot, '.stanlab-compose.env');
+const defaultComposeDirectory = '/srv/compose/stanlab';
+const managedComposeMarker = '# Managed by the Stanlab Dash CLI.';
 const nodePath = await realpath(process.execPath);
 const nodeDirectory = path.dirname(nodePath);
 const args = process.argv.slice(2);
@@ -172,9 +174,13 @@ async function install(installArgs) {
     DASH_GID: String(os.userInfo().gid),
     DASH_HOST_AGENT_DIR: dockerRuntime ? hostAgentDirectory : '',
     DASH_HOST_AGENT_SOCKET: dockerRuntime ? hostAgentSocket : '',
+    DASH_COMPOSE_DIR: dockerRuntime ? (readEnvValue(envText, 'DASH_COMPOSE_DIR') || defaultComposeDirectory) : '',
   };
   await writeEnvValues(envValues);
-  if (dockerRuntime) await writeComposeEnv(envValues);
+  if (dockerRuntime) {
+    await prepareComposeProject(envValues.DASH_COMPOSE_DIR);
+    await writeComposeEnv(envValues);
+  }
 
   await requireSystemdUserManager();
   if (dockerRuntime) {
@@ -290,7 +296,42 @@ WantedBy=default.target
 }
 
 function dockerCompose(composeArgs, timeout = undefined) {
-  invoke('docker', ['compose', '--env-file', composeEnvPath, '--project-name', 'stanlab-dash', '--file', composePath, ...composeArgs], timeout);
+  invoke('docker', ['compose', '--env-file', composeEnvironmentPath(), '--project-name', 'stanlab-dash', '--file', composeFilePath(), ...composeArgs], timeout);
+}
+
+function composeDirectory() {
+  const envText = readFileSync(path.join(projectRoot, '.env'), 'utf8');
+  const configured = readEnvValue(envText, 'DASH_COMPOSE_DIR');
+  if (!configured) return projectRoot;
+  if (!path.isAbsolute(configured)) throw new Error('DASH_COMPOSE_DIR must be an absolute path.');
+  return path.resolve(configured);
+}
+
+function composeFilePath() {
+  const directory = composeDirectory();
+  return directory === projectRoot ? legacyComposePath : path.join(directory, 'docker-compose.yml');
+}
+
+function composeEnvironmentPath() {
+  const directory = composeDirectory();
+  return directory === projectRoot ? legacyComposeEnvPath : path.join(directory, '.stanlab-compose.env');
+}
+
+async function prepareComposeProject(directory) {
+  if (!path.isAbsolute(directory)) throw new Error('The Stanlab Compose directory must be an absolute path.');
+  await mkdir(directory, { recursive: true, mode: 0o755 });
+  const destination = path.join(directory, 'docker-compose.yml');
+  let existing;
+  try { existing = await readFile(destination, 'utf8'); }
+  catch (error) { if (error.code !== 'ENOENT') throw error; }
+  if (existing !== undefined && !existing.includes(managedComposeMarker)) {
+    throw new Error(`Refusing to overwrite an unmanaged Compose file at ${destination}. Move it aside and retry.`);
+  }
+  const template = await readFile(legacyComposePath, 'utf8');
+  const markedTemplate = template.startsWith(managedComposeMarker) ? template : `${managedComposeMarker}\n${template}`;
+  const temporary = `${destination}.${process.pid}.tmp`;
+  await writeFile(temporary, markedTemplate, { mode: 0o644, flag: 'wx' });
+  await rename(temporary, destination);
 }
 
 function isDockerDeployment() {
@@ -324,7 +365,7 @@ async function setOrigin(value) {
   const origin = validateOrigin(value);
   if (!(await hasCredentials())) throw new Error('Run ./stanlab setup to create the dashboard account first.');
   await writeEnvValues({ DASH_ORIGIN: origin, DASH_COOKIE_SECURE: origin.startsWith('https://') ? 'true' : 'false' });
-  const installed = isDockerDeployment() ? exists(composePath) : isManagedService();
+  const installed = isDockerDeployment() ? exists(composeFilePath()) : isManagedService();
   if (isDockerDeployment() && installed) dockerCompose(['up', '--detach', '--force-recreate', '--wait', '--wait-timeout', '60'], 120_000);
   else if (installed) invoke('systemctl', ['--user', 'restart', serviceName], 30_000);
   console.log(`Dashboard origin set to ${origin}${installed ? '; service restarted.' : '.'}`);
@@ -388,11 +429,12 @@ async function writeEnvValues(values) {
 
 async function writeComposeEnv(values) {
   const keys = ['PORT', 'DASH_UID', 'DASH_GID', 'DASH_HOST_AGENT_DIR', 'DASH_DOCKER_NETWORK'];
-  const contents = `${keys.map((key) => `${key}=${values[key]}`).join('\n')}\n`;
-  const temporary = `${composeEnvPath}.${process.pid}.tmp`;
+  const destination = path.join(values.DASH_COMPOSE_DIR, '.stanlab-compose.env');
+  const contents = `${[...keys, 'DASH_PROJECT_DIR'].map((key) => `${key}=${key === 'DASH_PROJECT_DIR' ? projectRoot : values[key]}`).join('\n')}\n`;
+  const temporary = `${destination}.${process.pid}.tmp`;
   await writeFile(temporary, contents, { mode: 0o600, flag: 'wx' });
   await chmod(temporary, 0o600);
-  await rename(temporary, composeEnvPath);
+  await rename(temporary, destination);
 }
 
 async function hasCredentials() {
@@ -407,7 +449,7 @@ function readEnvValue(text, key) {
 async function uninstall() {
   const { unlink } = await import('node:fs/promises');
   if (isDockerDeployment()) {
-    if (!exists(composePath)) throw new Error('Stanlab Compose file was not found in this checkout.');
+    if (!exists(composeFilePath())) throw new Error('Stanlab Compose file was not found. Run ./stanlab install to regenerate it.');
     dockerCompose(['down'], 60_000);
     if (process.exitCode) throw new Error('Could not stop and remove the Stanlab container.');
     if (isManagedHostAgent()) {
@@ -428,7 +470,7 @@ async function uninstall() {
 }
 
 function requireInstalled() {
-  if (isDockerDeployment() ? !exists(composePath) : !isManagedService()) throw new Error('Service is not installed. Run ./stanlab install first.');
+  if (isDockerDeployment() ? !exists(composeFilePath()) : !isManagedService()) throw new Error('Service is not installed. Run ./stanlab install first.');
 }
 
 function exists(file) {

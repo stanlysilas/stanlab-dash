@@ -1,13 +1,14 @@
 services:
   stanlab-dash:
-    build: .
+    # Managed by the Stanlab Dash CLI; deployed to /srv/compose/stanlab.
+    build: ${DASH_PROJECT_DIR:?Run ./stanlab install}
     image: stanlab-dash:latest
     container_name: stanlab-dash
     restart: unless-stopped
     init: true
     user: "${DASH_UID:?Run ./stanlab install}:${DASH_GID:?Run ./stanlab install}"
     env_file:
-      - path: .env
+      - path: ${DASH_PROJECT_DIR:?Run ./stanlab install}/.env
         required: true
         format: raw
     environment:
@@ -18,7 +19,7 @@ services:
     ports:
       - "127.0.0.1:${PORT:?Run ./stanlab install}:3000"
     volumes:
-      - "${DASH_HOST_AGENT_DIR:?Run ./stanlab install}:/run/stanlab-agent:rw"
+      - "${DASH_HOST_AGENT_DIR:?Run ./stanlab install}:/run/stanlab-agent:rw,Z"
     networks:
       - stanlab
     healthcheck:

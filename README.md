@@ -18,7 +18,7 @@ cd stanlab-dash
 ./stanlab install --origin https://stanlab.dpdns.org
 ```
 
-The installer fetches locked dependencies, builds the app, prompts for the single dashboard account, and stores only a scrypt password hash in `.env` with owner-only permissions (`0600`). On a host with Docker Compose and one running Redis container, it builds the Stanlab container, joins the Redis Docker network, starts a restricted host helper as a `systemd --user` service, and waits for the app health check. A separate owner-only Compose variable file keeps the password hash out of Compose interpolation. On the Acer development workstation, without Docker Compose, it uses the native user service and in-memory sessions. `.env` is ignored by git.
+The installer fetches locked dependencies, builds the app, prompts for the single dashboard account, and stores only a scrypt password hash in `.env` with owner-only permissions (`0600`). On a host with Docker Compose and one running Redis container, it builds the Stanlab container, joins the Redis Docker network, starts a restricted host helper as a `systemd --user` service, and waits for the app health check. The installer keeps the project checkout in place and generates `/srv/compose/stanlab/docker-compose.yml` plus an owner-only Compose variable file beside it. Its helper socket bind mount uses SELinux relabeling, which is required on enforcing hosts. A separate owner-only Compose variable file keeps the password hash out of Compose interpolation. On the Acer development workstation, without Docker Compose, it uses the native user service and in-memory sessions. `.env` is ignored by git.
 
 The CLI uses npm internally because this source project is built with React and TypeScript; routine installation and service management use `./stanlab` commands.
 
@@ -96,7 +96,7 @@ On the Legion, install Stanlab from the cloned project and set its public browse
 ./stanlab install --origin https://stanlab.dpdns.org
 ```
 
-The installer assigns a free host port, saves it in `.env`, and publishes the container only on `127.0.0.1`. On the Legion it detects `nextcloud-redis` on `nextcloud_default` and defaults to Redis database 1 with a `stanlab:session:` key prefix. It waits for the container health check. If several Redis containers are running, set `REDIS_URL` and `DASH_DOCKER_NETWORK` in `.env` to select one explicitly. If Stanlab is already installed, `./stanlab origin https://stanlab.dpdns.org` recreates the container with the new origin.
+The installer assigns a free host port, saves it in `.env`, and publishes the container only on `127.0.0.1`. It generates the Compose project at `/srv/compose/stanlab/docker-compose.yml`, matching the host's existing `/srv/compose/ai` and `/srv/compose/nextcloud` layout; the image is built from the cloned checkout. On the Legion it detects `nextcloud-redis` on `nextcloud_default` and defaults to Redis database 1 with a `stanlab:session:` key prefix. It waits for the container health check. If several Redis containers are running, set `REDIS_URL` and `DASH_DOCKER_NETWORK` in `.env` to select one explicitly. If Stanlab is already installed, `./stanlab origin https://stanlab.dpdns.org` recreates the container with the new origin.
 
 Configure your DNS updater so `stanlab.dpdns.org` resolves to the Legion network's public IP, then forward TCP ports 80 and 443 from the router to the Legion. A reverse proxy such as Caddy can manage HTTPS certificates and forward the dashboard domain to Stanlab. Use the actual `PORT` from `.env` in this Caddyfile:
 
