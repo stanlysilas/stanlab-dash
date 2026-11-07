@@ -120,7 +120,7 @@ GPU telemetry is optional. On an NVIDIA host with the NVIDIA Container Toolkit c
 
 ### Enable App Store installs (optional)
 
-By default Stanlab stays isolated from the host Docker daemon. To enable the curated Store's Install/Start/Stop/Update/Remove actions, opt in by merging `docker-compose.app-store.yml` when starting Stanlab. This gives Stanlab access to the Docker Engine API. Docker warns that daemon access can permit host filesystem changes, so enable this only for a trusted, up-to-date Stanlab instance. The Store accepts only built-in catalog IDs and fixed Compose definitions; it does not accept arbitrary Compose files or shell commands.
+By default Stanlab stays isolated from the host Docker daemon. To enable the curated Store's Install/Start/Stop/Update/Remove actions, opt in by merging `docker-compose.app-store.yml` when starting Stanlab. This gives Stanlab access to the Docker Engine API. Docker warns that daemon access can permit host filesystem changes, so enable this only for a trusted, up-to-date Stanlab instance. The Store accepts only built-in catalog IDs and fixed Compose definitions; it does not accept arbitrary Compose files or shell commands. On SELinux-enforcing hosts, this overlay disables SELinux label confinement for the Stanlab container so it can connect to the Docker socket; this applies only when you opt in with this overlay.
 
 First, find the numeric group ID of the host Docker socket and add it to the `.env` file in your Compose directory:
 

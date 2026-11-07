@@ -1,6 +1,9 @@
 # Optional host Docker access for the App Store. See README.md before enabling.
 services:
   stanlab:
+    # Legion uses SELinux; disable its label confinement only for this opt-in Docker socket container.
+    security_opt:
+      - label=disable
     group_add:
       - "${DOCKER_GID:?Set DOCKER_GID to the numeric group ID of the Docker socket}"
     environment:
