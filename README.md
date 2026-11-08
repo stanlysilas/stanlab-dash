@@ -107,6 +107,8 @@ docker compose down
 
 The image runs as the unprivileged `node` user and includes Bash for approved scripts. The starter `Hello World` script runs inside the container. Scripts are allowlisted in `config/scripts.json`, run without root privileges, and have a 30-second timeout. CPU and memory values are container-visible; disk usage is measured from the persistent data volume.
 
+The default Compose file also enables host process monitoring and the curated App Store's Docker actions. This exposes the host PID namespace and Docker Engine socket to Stanlab. Docker socket access is highly privileged and can permit host filesystem changes; use this only with a trusted Stanlab instance and keep it updated. Process controls are restricted to processes owned by the Stanlab container's Linux UID; root-owned system services cannot be controlled.
+
 GPU telemetry is optional. On an NVIDIA host with the NVIDIA Container Toolkit configured, add `gpus: all` at the service level and merge the NVIDIA variables into the existing `environment` mapping:
 
 ```yaml
@@ -120,42 +122,25 @@ GPU telemetry is optional. On an NVIDIA host with the NVIDIA Container Toolkit c
 
 The CPU card reads the package/die temperature from Linux `hwmon` or thermal-zone sensors. The GPU card reads NVIDIA temperature through `nvidia-smi`. If the hardware, driver, or container does not expose a sensor, its temperature shows as unavailable.
 
-### Enable the host process monitor (optional)
+### Docker socket access and process monitor
 
-The process table reads host `/proc` data and refreshes every five seconds. To enable it in Docker, merge `docker-compose.process-monitor.yml` with your Compose file. This shares the host PID namespace and disables SELinux label confinement for Stanlab on enforcing hosts. Process controls are restricted to processes owned by the Stanlab container's Linux UID; Stanlab and its parent processes are protected, and root-owned system services cannot be controlled. The available actions are suspend, resume, end (SIGTERM), and force-kill (SIGKILL). A terminated process cannot be restarted from the process list; use Resume only for a suspended process.
+Both features are part of the main Compose file, so no overlay files or extra `-f` arguments are needed. The App Store accepts only built-in catalog entries and fixed Compose definitions; it does not accept arbitrary Compose files or shell commands. The process table reads host `/proc` data and refreshes every five seconds. Available actions are suspend, resume, end (SIGTERM), and force-kill (SIGKILL). Stanlab and its parent processes are protected, and root-owned system services cannot be controlled. A terminated process cannot be restarted from the process list; use Resume only for a suspended process.
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/stanlysilas/stanlab-dash/main/docker-compose.process-monitor.yml -o docker-compose.process-monitor.yml
-docker compose -f docker-compose.yml -f docker-compose.process-monitor.yml config --quiet
-docker compose -f docker-compose.yml -f docker-compose.process-monitor.yml up -d --force-recreate stanlab
-```
-
-If you also enabled the App Store overlay, keep both overlays in every Compose command:
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.app-store.yml -f docker-compose.process-monitor.yml up -d --force-recreate stanlab
-```
-
-The Docker image runs as UID 1000 (`node`) by default. If your Docker host uses user-namespace remapping or a different UID for the account whose processes you want to control, those processes will appear protected.
-
-### Enable App Store installs (optional)
-
-By default Stanlab stays isolated from the host Docker daemon. To enable the curated Store's Install/Start/Stop/Update/Remove actions, opt in by merging `docker-compose.app-store.yml` when starting Stanlab. This gives Stanlab access to the Docker Engine API. Docker warns that daemon access can permit host filesystem changes, so enable this only for a trusted, up-to-date Stanlab instance. The Store accepts only built-in catalog IDs and fixed Compose definitions; it does not accept arbitrary Compose files or shell commands. On SELinux-enforcing hosts, this overlay disables SELinux label confinement for the Stanlab container so it can connect to the Docker socket; this applies only when you opt in with this overlay.
-
-First, find the numeric group ID of the host Docker socket and add it to the `.env` file in your Compose directory:
+Before the first `docker compose up`, find the numeric group ID of the host Docker socket:
 
 ```bash
 stat -c '%g' /var/run/docker.sock
 ```
 
-Set `DOCKER_GID` in `.env` to that number. The overlay defaults to `/var/run/docker.sock`; set `DOCKER_SOCKET_PATH` if your Docker socket is elsewhere. Then start Stanlab with both Compose files:
+Set `DOCKER_GID` in `.env` to that number. The Compose file uses `/var/run/docker.sock` by default; set `DOCKER_SOCKET_PATH` if your Docker socket is elsewhere. The image runs as UID 1000 (`node`) by default. If the host uses user-namespace remapping or a different UID for the processes you need to control, those processes appear protected. On SELinux-enforcing hosts, Compose disables label confinement for Stanlab so it can access the host process table and Docker socket.
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.app-store.yml config --quiet
-docker compose -f docker-compose.yml -f docker-compose.app-store.yml up -d
+docker compose config --quiet
+docker compose pull stanlab
+docker compose up -d
 ```
 
-Keep using both `-f` options for later `up`, `pull`, and other Compose operations. Without this overlay, Store entries remain a catalog and can be deployed manually with your own Compose files; add their URLs under **My Apps**.
+Use those same simple commands for later updates. No overlay Compose files are required.
 
 The wallpaper stays in the browser's IndexedDB. The login cookie is HTTP-only, SameSite=Strict, and expires no later than 15 minutes after sign-in.
 

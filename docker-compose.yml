@@ -5,6 +5,13 @@ services:
     container_name: stanlab-dash
     restart: unless-stopped
     init: true
+    # Enables the Overview process monitor and owner-scoped process controls.
+    pid: host
+    # Required by Docker socket access on SELinux enforcing hosts (Legion).
+    security_opt:
+      - label=disable
+    group_add:
+      - "${DOCKER_GID:?Set DOCKER_GID to the numeric group ID of the Docker socket}"
 
     environment:
       PORT: "3000"
@@ -15,6 +22,8 @@ services:
       STANLAB_DATA_DIR: ${STANLAB_DATA_DIR:?Set STANLAB_DATA_DIR in .env}
       STANLAB_DISK_PATH: ${STANLAB_DISK_PATH:?Set STANLAB_DISK_PATH in .env}
       XDG_DATA_HOME: ${XDG_DATA_HOME:?Set XDG_DATA_HOME in .env}
+      STANLAB_PROCESS_VIEW: host
+      DOCKER_HOST: unix:///var/run/docker.sock
       # For NVIDIA hosts with NVIDIA Container Toolkit, enable GPU telemetry:
       # NVIDIA_VISIBLE_DEVICES: all
       # NVIDIA_DRIVER_CAPABILITIES: utility
@@ -27,7 +36,12 @@ services:
 
     volumes:
       - stanlab-data:/app/data
-      
+      - type: bind
+        source: ${DOCKER_SOCKET_PATH:-/var/run/docker.sock}
+        target: /var/run/docker.sock
+        bind:
+          create_host_path: false
+
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s

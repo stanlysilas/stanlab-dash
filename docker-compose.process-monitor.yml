@@ -1,8 +1,0 @@
-# Optional host process visibility for the Overview process monitor.
-services:
-  stanlab:
-    pid: host
-    security_opt:
-      - label=disable
-    environment:
-      STANLAB_PROCESS_VIEW: host
