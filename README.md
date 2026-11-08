@@ -118,6 +118,26 @@ GPU telemetry is optional. On an NVIDIA host with the NVIDIA Container Toolkit c
       NVIDIA_DRIVER_CAPABILITIES: utility
 ```
 
+The CPU card reads the package/die temperature from Linux `hwmon` or thermal-zone sensors. The GPU card reads NVIDIA temperature through `nvidia-smi`. If the hardware, driver, or container does not expose a sensor, its temperature shows as unavailable.
+
+### Enable the host process monitor (optional)
+
+The process table reads host `/proc` data and refreshes every five seconds. To enable it in Docker, merge `docker-compose.process-monitor.yml` with your Compose file. This shares the host PID namespace and disables SELinux label confinement for Stanlab on enforcing hosts. Process controls are restricted to processes owned by the Stanlab container's Linux UID; Stanlab and its parent processes are protected, and root-owned system services cannot be controlled. The available actions are suspend, resume, end (SIGTERM), and force-kill (SIGKILL). A terminated process cannot be restarted from the process list; use Resume only for a suspended process.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/stanlysilas/stanlab-dash/main/docker-compose.process-monitor.yml -o docker-compose.process-monitor.yml
+docker compose -f docker-compose.yml -f docker-compose.process-monitor.yml config --quiet
+docker compose -f docker-compose.yml -f docker-compose.process-monitor.yml up -d --force-recreate stanlab
+```
+
+If you also enabled the App Store overlay, keep both overlays in every Compose command:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.app-store.yml -f docker-compose.process-monitor.yml up -d --force-recreate stanlab
+```
+
+The Docker image runs as UID 1000 (`node`) by default. If your Docker host uses user-namespace remapping or a different UID for the account whose processes you want to control, those processes will appear protected.
+
 ### Enable App Store installs (optional)
 
 By default Stanlab stays isolated from the host Docker daemon. To enable the curated Store's Install/Start/Stop/Update/Remove actions, opt in by merging `docker-compose.app-store.yml` when starting Stanlab. This gives Stanlab access to the Docker Engine API. Docker warns that daemon access can permit host filesystem changes, so enable this only for a trusted, up-to-date Stanlab instance. The Store accepts only built-in catalog IDs and fixed Compose definitions; it does not accept arbitrary Compose files or shell commands. On SELinux-enforcing hosts, this overlay disables SELinux label confinement for the Stanlab container so it can connect to the Docker socket; this applies only when you opt in with this overlay.

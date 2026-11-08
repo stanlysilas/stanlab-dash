@@ -5,24 +5,29 @@ services:
     container_name: stanlab-dash
     restart: unless-stopped
     init: true
+
     environment:
       PORT: "3000"
       DASH_BIND_ADDRESS: 0.0.0.0
       DASH_ORIGIN: ${DASH_ORIGIN:?Set DASH_ORIGIN in .env}
       DASH_COOKIE_SECURE: ${DASH_COOKIE_SECURE:?Set DASH_COOKIE_SECURE in .env}
       DASH_HOSTNAME: ${DASH_HOSTNAME:?Set DASH_HOSTNAME in .env}
-      STANLAB_DATA_DIR: /app/data/stanlab-dash
-      STANLAB_DISK_PATH: /app/data
-      XDG_DATA_HOME: /app/data
+      STANLAB_DATA_DIR: ${STANLAB_DATA_DIR:?Set STANLAB_DATA_DIR in .env}
+      STANLAB_DISK_PATH: ${STANLAB_DISK_PATH:?Set STANLAB_DISK_PATH in .env}
+      XDG_DATA_HOME: ${XDG_DATA_HOME:?Set XDG_DATA_HOME in .env}
       # For NVIDIA hosts with NVIDIA Container Toolkit, enable GPU telemetry:
       # NVIDIA_VISIBLE_DEVICES: all
       # NVIDIA_DRIVER_CAPABILITIES: utility
+
     # Also enable this line for NVIDIA hosts with NVIDIA Container Toolkit:
     # gpus: all
+
     ports:
       - "${STANLAB_BIND_ADDRESS:?Set STANLAB_BIND_ADDRESS in .env}:${STANLAB_PORT:?Set STANLAB_PORT in .env}:3000"
+
     volumes:
       - stanlab-data:/app/data
+      
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s
